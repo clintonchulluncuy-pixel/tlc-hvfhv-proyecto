@@ -1,0 +1,263 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  showstringspaces=false
+}
+
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+
+\title{\textbf{Proyecto final de Base de Datos -- Parte 2}\\[0.3em]
+\Large Arquitectura de datos para Ciencia de Datos e IA:\\[0.2em]
+Predicción y detección de anomalías de demanda espaciotemporal de viajes (NYC TLC HVFHV 2026)}
+\author{%
+  Sebastian Rodrigo García Villacorta\\
+  Dante Guillermo Barreto Daza\\
+  Clinton Michael Chulluncuy Reynoso\\
+  Ronald Ramiro Hilario Orihuela}
+\date{Curso: Base de Datos (MCD8008) -- Docente: Luis Alberto Chicoma Chevez}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+En la primera entrega se implementó un modelo relacional en PostgreSQL sobre los registros
+High Volume For-Hire Vehicle (HVFHV) de Nueva York (enero--mayo de 2026), con 11 tablas,
+particionado mensual, control de calidad y feature engineering orientado a la predicción de
+demanda. En esta segunda etapa se amplía el caso hacia una arquitectura especializada
+complementaria: se selecciona \textbf{TimescaleDB} (series temporales) junto con
+\textbf{PostGIS} (espacial) para responder en tiempo casi real a la pregunta
+\emph{¿cuántos viajes se solicitarán en la próxima hora por zona y plataforma, y qué zonas
+presentan demanda anómala?}. Se justifica la elección por el patrón de acceso temporal y
+espacial de los datos, se diseña el modelo de datos especializado y se presentan resultados
+reales de la implementación, incluyendo una reducción de almacenamiento de $162$\,MB a
+$14$\,MB mediante compresión nativa (factor $\approx 11{,}6\times$).
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Arquitectura de datos para Ciencia de Datos e IA}
+
+El caso desarrollado en la Parte 1 modela los viajes de movilidad bajo demanda de Uber y Lyft
+publicados por la \emph{New York City Taxi and Limousine Commission}. El proceso observable
+comprende solicitud, asignación, llegada, recogida, desplazamiento, finalización y componentes
+económicos de cada viaje.
+
+Las características del problema --- volumen elevado, generación periódica de datos, análisis
+predominantemente por rangos de tiempo y por zona geográfica --- hacen que el modelo
+relacional sea insuficiente para consultas analíticas de baja latencia sobre series históricas
+largas. Por ello se identifica un escenario de Ciencia de Datos que puede beneficiarse de una
+tecnología de almacenamiento y procesamiento especializada, \textbf{sin reemplazar} a
+PostgreSQL, que sigue siendo la fuente de verdad transaccional.
+
+\section{Definición del caso de IA / Ciencia de Datos}
+
+\subsection{Enunciado}
+\textbf{Caso:} predicción de demanda espaciotemporal de viajes y detección de anomalías.
+
+\emph{¿Cuántos viajes se van a solicitar en la próxima hora en cada zona y plataforma, y qué
+zonas presentan una demanda inusualmente alta o baja respecto de su comportamiento
+habitual?}
+
+\subsection{Unidad predictiva y variable objetivo}
+La unidad predictiva, heredada de la Parte 1, es la combinación
+\[
+(\text{hora},\ \text{zona\_origen\_id},\ \text{plataforma\_codigo}),
+\]
+y la variable objetivo es $\text{viajes\_objetivo}$, es decir, el número de recogidas observadas
+en esa hora, zona y plataforma.
+
+\subsection{Salidas esperadas}
+\begin{itemize}
+  \item Pronóstico horario de demanda por zona y plataforma (tarea de regresión).
+  \item Alerta de anomalía cuando la demanda observada se aleja del comportamiento esperado.
+\end{itemize}
+
+\section{Caracterización del problema}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}p{4.6cm}p{8.6cm}@{}}
+\toprule
+\textbf{Dimensión} & \textbf{Valor / estimación} \\
+\midrule
+Volumen & 105\,996\,114 filas en el universo (ene--may 2026); muestra reproducible de
+$1\,000\,000$ filas/mes ($4\,999\,931$ cargadas). Proyección $\approx 250$\,M filas/año. \\
+Frecuencia & Ingesta mensual por lotes; análisis horario (agregado \texttt{demanda\_hora}). \\
+Tipos de datos & Temporales (timestamp), numéricos (importes, millas, duración), booleanos y
+geoespaciales (longitud/latitud WGS84). \\
+Tiempo real & Casi real: inferencia cada hora sobre la serie actualizada. \\
+Latencia esperada & Inferencia $< 100$\,ms; consulta de demanda $< 500$\,ms. \\
+Patrón lect/escritura & Escritura en lote (ingesta mensual) y lectura analítica intensiva por
+rango temporal y por zona. \\
+Escalabilidad & Particionado por tiempo + compresión para sostener $\approx 250$\,M filas/año. \\
+Consultas predominantes & Agregados temporales (\texttt{time\_bucket}), rezagos, medias
+móviles y filtros por zona/proximidad. \\
+\bottomrule
+\end{tabular}
+\caption{Caracterización del problema de predicción de demanda.}
+\end{table}
+
+\section{Selección de tecnología}
+
+Se selecciona \textbf{TimescaleDB} (extensión de PostgreSQL para series temporales) como
+tecnología principal, complementada con \textbf{PostGIS} para capacidades espaciales. La
+selección se deriva directamente de la caracterización anterior:
+
+\begin{itemize}
+  \item \textbf{Qué problema resuelve:} consultas de rango temporal y agregaciones sobre
+        millones de observaciones con baja latencia, que en un escaneo secuencial del modelo
+        relacional son costosas.
+  \item \textbf{Por qué fue seleccionada:} el dato es una serie temporal; TimescaleDB aporta
+        hypertables (particionado automático por tiempo), compresión nativa y
+        \emph{continuous aggregates}, y al ser una extensión se integra con el modelo
+        relacional existente sin migración.
+  \item \textbf{Ventajas:} compresión demostrada ($162$\,MB $\to$ $14$\,MB), agregados
+        mantenidos automáticamente y consultas espaciales vía PostGIS/GiST.
+  \item \textbf{Limitaciones:} la compresión de segmentos deshabilita algunas escrituras
+        directas sobre chunks comprimidos (requiere descompresión/recompresión) y el
+        paralelismo de escritura es menor que en soluciones distribuidas puras.
+  \item \textbf{Cómo se complementa:} PostgreSQL conserva el núcleo transaccional (viajes,
+        catálogos, auditoría, integridad referencial); TimescaleDB/PostGIS cubren el patrón de
+        acceso analítico temporal--espacial.
+\end{itemize}
+
+\section{Modelo de datos NoSQL / especializado}
+
+El modelo especializado se describe en detalle en el entregable \texttt{modelo\_nosql.pdf}.
+En síntesis:
+
+\begin{enumerate}
+  \item Se añade una columna \texttt{geo GEOGRAPHY(POINT,4326)} a \texttt{core.zona\_taxi},
+        derivada de longitud/latitud, con índice espacial GiST.
+  \item Se crea el hypertable \texttt{analytics.demanda\_serie} particionado por \texttt{hora}.
+  \item Se crea un \emph{continuous aggregate} diario \texttt{analytics.demanda\_diaria}.
+  \item Se configura compresión por segmentos (\texttt{zona\_origen\_id},
+        \texttt{plataforma\_codigo}) ordenados por \texttt{hora}.
+\end{enumerate}
+
+\section{Arquitectura propuesta}
+
+El diagrama completo se presenta en el entregable \texttt{arquitectura.pdf}. Los componentes
+principales son:
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=0.6cm and 1.2cm,
+  box/.style={draw, rounded corners=2pt, align=center, minimum height=0.7cm, minimum width=2.6cm, font=\small},
+  arr/.style={-{Stealth[length=2mm]}}
+]
+\node[box] (app) {APP Web / Mobile};
+\node[box, below=of app] (api) {API};
+\node[box, below left=of api] (pg) {PostgreSQL\\ (core transaccional)};
+\node[box, below right=of api] (ts) {TimescaleDB + PostGIS\\ (series + espacial)};
+\node[box, below=of ts] (fs) {Feature Store};
+\node[box, below=of fs] (ml) {ML Pipeline\\ (entrenamiento)};
+\node[box, below=of ml] (reg) {Model Registry\\ (MLflow)};
+\node[box, below=of reg] (inf) {API de inferencia\\ (FastAPI)};
+\node[box, below=of pg] (datos) {Datos de negocio};
+
+\draw[arr] (app) -- (api);
+\draw[arr] (api) -- (pg);
+\draw[arr] (api) -- (ts);
+\draw[arr] (ts) -- (fs);
+\draw[arr] (fs) -- (ml);
+\draw[arr] (ml) -- (reg);
+\draw[arr] (reg) -- (inf);
+\draw[arr] (pg) -- (datos);
+\end{tikzpicture}
+\end{center}
+
+\section{Comparación entre tecnologías}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}p{4.2cm}p{4.6cm}p{4.8cm}@{}}
+\toprule
+\textbf{Criterio} & \textbf{PostgreSQL} & \textbf{TimescaleDB (+PostGIS)} \\
+\midrule
+Modelo & Relacional & Serie temporal + espacial \\
+Particionado & Manual (por mes) & Automático (hypertable) \\
+Compresión & No nativa & Nativa por segmentos ($\approx 11{,}6\times$ observado) \\
+Agregados históricos & Vistas/consultas costosas & Continuous aggregates \\
+Consultas por rango temporal & Costosas sobre millones de filas & Optimizadas por tiempo \\
+Espacial & No & PostGIS + índice GiST \\
+Transacciones ACID & Excelente & Excelente (es PostgreSQL) \\
+Caso principal & Core transaccional, integridad, catálogos & Analítica temporal--espacial en tiempo casi real \\
+\bottomrule
+\end{tabular}
+\caption{Comparación entre PostgreSQL y TimescaleDB/PostGIS.}
+\end{table}
+
+\subsection{¿Por qué utilizar ambas tecnologías en lugar de reemplazar una por otra?}
+La respuesta se fundamenta en el concepto de \emph{Polyglot Persistence}: distintas tecnologías
+coexisten según las características de cada problema. PostgreSQL permanece como la
+\emph{fuente de verdad} transaccional (viajes, catálogos, lotes de ingesta, reglas de calidad e
+integridad referencial). TimescaleDB y PostGIS optimizan el patrón de acceso analítico
+temporal--espacial que el modelo relacional no resuelve eficientemente. Los datos fluyen de
+PostgreSQL hacia la capa especializada, sin duplicar la lógica de negocio ni sustituir el
+sistema de registro.
+
+\section{Resultados de la implementación}
+
+La implementación se ejecutó sobre PostgreSQL 16 + TimescaleDB 2.31 + PostGIS 3.6 en un
+contenedor Docker. Los resultados son reproducibles con los scripts de la carpeta
+\texttt{Sql/}.
+
+\subsection{Caracterización}
+\begin{itemize}
+  \item Viajes cargados: $4\,999\,931$ (Uber $3\,590\,362$ = $71{,}81\%$; Lyft $1\,409\,569$
+        = $28{,}19\%$).
+  \item Agregado horario relacional \texttt{demanda\_hora}: $1\,272\,029$ filas ($162$\,MB).
+  \item Hypertable \texttt{demanda\_serie}: $1\,272\,029$ filas, $22$ chunks, todos
+        comprimidos: $14$\,MB (factor $\approx 11{,}6\times$).
+\end{itemize}
+
+\subsection{Consultas temporales}
+\begin{itemize}
+  \item Hora pico global: \texttt{2026-02-07 19:00} con $3\,163$ viajes.
+  \item Día de mayor demanda: \texttt{2026-02-07} con $47\,981$ viajes.
+\end{itemize}
+
+\subsection{Consultas espaciales}
+\begin{itemize}
+  \item Zonas con mayor demanda en un radio de $2$\,km de Midtown Center: Times Sq
+        ($55\,043$), Midtown Center ($55\,014$), Midtown South ($45\,399$).
+  \item Zonas más cercanas a JFK (kNN): Springfield Gardens South ($2\,514$\,m), Springfield
+        Gardens North ($3\,012$\,m), Baisley Park ($3\,570$\,m).
+  \item Distancia de centroides Midtown--JFK: $20\,324$\,m ($12{,}63$ millas), frente a
+        $17{,}56$ millas de media en los $1\,040$ viajes reales con esa ruta.
+\end{itemize}
+
+\section{Pasos de replicación}
+
+\begin{enumerate}
+  \item Levantar el stack con \texttt{docker compose up -d --build} (carpeta \texttt{deploy/}).
+  \item Ejecutar en orden \texttt{01\_schema.sql}, \texttt{02\_tables.sql},
+        \texttt{03\_data.sql} y \texttt{06\_zonas\_geo.sql}.
+  \item Cargar los CSV de \texttt{viaje} e \texttt{incidencia} con
+        \texttt{\textbackslash copy ... WITH (FORMAT csv, HEADER true, NULL '')}.
+  \item Reconstruir \texttt{analytics.demanda\_hora}.
+  \item Ejecutar \texttt{07\_timescale.sql} (capa espacial + hypertable + continuous
+        aggregate + compresión).
+  \item Ejecutar \texttt{08\_demo\_queries.sql} para reproducir los resultados.
+\end{enumerate}
+
+\end{document}

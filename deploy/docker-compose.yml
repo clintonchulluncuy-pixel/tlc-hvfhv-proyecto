@@ -1,0 +1,50 @@
+services:
+  db:
+    image: timescale/timescaledb-ha:pg16
+    container_name: tlc-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tlc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-tlc}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/home/postgres/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tlc -d tlc"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tlc-redis
+    ports:
+      - "6379:6379"
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: tlc-mlflow
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /mlartifacts
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlartifacts
+
+  api:
+    build: ./api
+    container_name: tlc-api
+    environment:
+      DATABASE_URL: postgresql://tlc:${POSTGRES_PASSWORD:-change_me}@db:5432/tlc
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  pgdata:
+  mlflow-data:

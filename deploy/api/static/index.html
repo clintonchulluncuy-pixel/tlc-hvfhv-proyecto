@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Predicción y anomalías de demanda — NYC TLC</title>
+<style>
+  :root{--bg:#0f172a;--panel:#1e293b;--panel2:#273449;--line:#334155;
+        --text:#e2e8f0;--muted:#94a3b8;--accent:#38bdf8;--good:#34d399;--bad:#f87171}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--text);line-height:1.5}
+  .wrap{max-width:1000px;margin:0 auto;padding:24px 20px 80px}
+  h1{font-size:1.6rem;color:#fff;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:16px 0}
+  .card h2{margin:0 0 12px;font-size:1.1rem;color:var(--accent)}
+  select,input,button{font-size:.95em;padding:8px 12px;border-radius:8px;border:1px solid var(--line);
+        background:var(--panel2);color:var(--text)}
+  select{min-width:280px}
+  button{background:var(--accent);color:#062033;font-weight:600;cursor:pointer;border:none}
+  button:hover{opacity:.9}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .zona-info{color:var(--muted);font-size:.9em;margin-top:8px}
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.cards{grid-template-columns:1fr}}
+  .pcard{background:var(--panel2);border-radius:10px;padding:14px}
+  .pcard .plat{font-weight:700;color:#fff}
+  .big{font-size:2rem;font-weight:700;color:var(--accent);margin:6px 0 0}
+  .label{color:var(--muted);font-size:.8em;text-transform:uppercase;letter-spacing:.05em}
+  .small{font-size:.8em;color:var(--muted)}
+  table{border-collapse:collapse;width:100%;font-size:.9em}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left}
+  th{background:var(--panel2);color:#fff}
+  .neg{color:var(--bad)}
+  .pos{color:var(--good)}
+  .empty{color:var(--muted);font-style:italic}
+  svg{width:100%;height:180px;background:var(--panel2);border-radius:8px}
+  .axis{fill:var(--muted);font-size:9px}
+  .legend{display:flex;gap:16px;font-size:.85em;color:var(--muted);margin-top:6px}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Predicción y detección de anomalías de demanda</h1>
+  <p class="sub">NYC TLC HVFHV 2026 · TimescaleDB + PostGIS · baseline naive (misma hora semana previa) + z-score</p>
+
+  <div class="card">
+    <div class="row">
+      <label for="zona">Zona:</label>
+      <select id="zona"></select>
+      <button onclick="cargar()">Consultar</button>
+    </div>
+    <div id="zonaInfo" class="zona-info"></div>
+  </div>
+
+  <div class="card" id="pronosticoCard" hidden>
+    <h2>Pronóstico próxima hora</h2>
+    <div class="cards" id="pronCards"></div>
+  </div>
+
+  <div class="card" id="histCard" hidden>
+    <h2>Demanda horaria (últimas 72 h)</h2>
+    <svg id="chart" viewBox="0 0 900 180" preserveAspectRatio="none"></svg>
+    <div class="legend">
+      <span><span class="dot" style="background:#38bdf8"></span>Uber</span>
+      <span><span class="dot" style="background:#f472b6"></span>Lyft</span>
+    </div>
+  </div>
+
+  <div class="card" id="anomCard" hidden>
+    <h2>Anomalías (z-score &gt; 2)</h2>
+    <table>
+      <thead><tr><th>Hora</th><th>Plataforma</th><th>Viajes</th><th>Media</th><th>Desv.</th><th>z-score</th></tr></thead>
+      <tbody id="anomBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+
+async function cargarZonas(){
+  const r = await fetch('/api/zones');
+  const zonas = await r.json();
+  const sel = $('#zona');
+  zonas.forEach(z => {
+    const o = document.createElement('option');
+    o.value = z.location_id;
+    o.textContent = `${z.location_id} — ${z.nombre} (${z.borough})`;
+    sel.appendChild(o);
+  });
+  sel.value = "161";
+}
+
+async function cargar(){
+  const z = $('#zona').value;
+  const [fp, ap] = await Promise.all([fetch(`/api/forecast/${z}`), fetch(`/api/anomalies/${z}`)]);
+  const f = await fp.json();
+  const a = await ap.json();
+
+  $('#zonaInfo').textContent = `Zona ${z} — ${f.zona.zona} (${f.zona.borough}) · Último dato: ${f.pronostico[0]?.ultima?.replace('T',' ').slice(0,16) || '—'} · Objetivo: ${f.pronostico[0]?.objetivo?.replace('T',' ').slice(0,16) || '—'}`;
+
+  renderPron(f.pronostico);
+  renderHist(f.historico);
+  renderAnom(a);
+}
+
+function renderPron(p){
+  const cont = $('#pronCards');
+  cont.innerHTML = '';
+  p.forEach(x => {
+    const c = document.createElement('div');
+    c.className = 'pcard';
+    const naive = x.pronostico_naive == null ? '—' : x.pronostico_naive;
+    const prom  = x.pronostico_promedio == null ? '—' : x.pronostico_promedio;
+    c.innerHTML = `
+      <div class="plat">${x.nombre}</div>
+      <div class="label">Baseline naive (misma hora semana previa)</div>
+      <div class="big">${naive}</div>
+      <div class="label" style="margin-top:10px">Promedio 4 semanas</div>
+      <div style="font-size:1.3rem;font-weight:700;color:#cbd5e1">${prom}</div>
+    `;
+    cont.appendChild(c);
+  });
+  $('#pronosticoCard').hidden = false;
+}
+
+function renderHist(h){
+  const byPlat = {};
+  h.forEach(r => {
+    (byPlat[r.plataforma_codigo] = byPlat[r.plataforma_codigo] || []).push(r);
+  });
+  const keys = Object.keys(byPlat);
+  if(!keys.length){ $('#histCard').hidden = true; return; }
+  const svg = $('#chart');
+  const W = 900, H = 180, pad = 20;
+  const all = h.map(r => r.viajes);
+  const max = Math.max(10, ...all);
+  const n = h.length;
+  const colors = {HV0003:'#38bdf8', HV0005:'#f472b6'};
+
+  let pts = '';
+  keys.forEach(k => {
+    const arr = byPlat[k];
+    let d = '';
+    arr.forEach((r, i) => {
+      const x = pad + (i / (n - 1)) * (W - 2*pad);
+      const y = H - pad - (r.viajes / max) * (H - 2*pad);
+      d += (i ? ' L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    });
+    pts += `<path d="${d}" fill="none" stroke="${colors[k]||'#fff'}" stroke-width="1.5"/>`;
+  });
+  svg.innerHTML = pts + `<line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="#334155"/>`;
+  $('#histCard').hidden = false;
+}
+
+function renderAnom(a){
+  const tb = $('#anomBody');
+  tb.innerHTML = '';
+  if(!a.length){
+    tb.innerHTML = '<tr><td colspan="6" class="empty">No se detectaron anomalías (z-score &gt; 2) en los últimos 30 días.</td></tr>';
+  } else {
+    a.forEach(r => {
+      const tr = document.createElement('tr');
+      const cls = r.zscore > 0 ? 'pos' : 'neg';
+      tr.innerHTML = `<td>${r.hora}</td><td>${r.plataforma_codigo}</td><td>${r.viajes}</td>
+        <td>${r.media}</td><td>${r.sd}</td><td class="${cls}">${r.zscore}</td>`;
+      tb.appendChild(tr);
+    });
+  }
+  $('#anomCard').hidden = false;
+}
+
+cargarZonas().then(cargar);
+</script>
+</body>
+</html>

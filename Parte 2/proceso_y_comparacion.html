@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Parte 2 — Proceso y comparación con lo solicitado</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#273449; --line:#334155;
+    --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --accent2:#34d399;
+    --warn:#fbbf24; --bad:#f87171; --code:#0b1220;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--text);line-height:1.6}
+  .wrap{max-width:980px;margin:0 auto;padding:24px 20px 80px}
+  header{background:linear-gradient(135deg,#0ea5e9,#6366f1);padding:36px 20px;border-radius:16px;margin-bottom:28px}
+  header h1{margin:0;font-size:1.9rem;color:#fff}
+  header p{margin:8px 0 0;color:#e0f2fe}
+  h2{font-size:1.4rem;margin-top:40px;padding-bottom:8px;border-bottom:2px solid var(--line);color:var(--accent)}
+  h3{font-size:1.1rem;margin-top:24px;color:#fff}
+  p{color:var(--text)}
+  .muted{color:var(--muted)}
+  code{background:var(--code);color:#7dd3fc;padding:2px 6px;border-radius:4px;font-family:"SFMono-Regular",Consolas,monospace;font-size:.9em}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px;overflow-x:auto;
+      font-family:"SFMono-Regular",Consolas,monospace;font-size:.85em;line-height:1.5;color:#cbd5e1}
+  pre code{background:none;padding:0;color:inherit}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:.92em;background:var(--panel);border-radius:10px;overflow:hidden}
+  th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#fff}
+  td strong{color:#fff}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:16px 0}
+  .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.78em;font-weight:600;white-space:nowrap}
+  .ok{background:rgba(52,211,153,.15);color:#6ee7b7;border:1px solid rgba(52,211,153,.4)}
+  .partial{background:rgba(251,191,36,.15);color:#fcd34d;border:1px solid rgba(251,191,36,.4)}
+  .new{background:rgba(248,113,113,.15);color:#fca5a5;border:1px solid rgba(248,113,113,.4)}
+  .req{background:var(--panel2);border-left:4px solid var(--accent);border-radius:8px;padding:12px 16px;margin:10px 0}
+  .req .t{font-weight:700;color:var(--accent)}
+  ul li{margin:6px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+  /* Architecture diagram */
+  .arch{display:flex;flex-direction:column;align-items:center;gap:0}
+  .node{border-radius:8px;padding:10px 18px;text-align:center;font-size:.85em;border:1px solid var(--line);min-width:220px;margin:6px 0}
+  .node small{display:block;color:var(--muted);font-size:.85em}
+  .n-app{background:#334155}
+  .n-rel{background:rgba(33,102,172,.25);border-color:rgba(96,165,250,.5)}
+  .n-ts{background:rgba(33,150,120,.25);border-color:rgba(45,212,191,.5)}
+  .n-ml{background:rgba(190,100,40,.25);border-color:rgba(251,146,60,.5)}
+  .arrow{color:var(--muted);font-size:1.1em;line-height:1;margin:2px 0}
+  .branches{display:flex;gap:60px;justify-content:center;flex-wrap:wrap}
+  .col{display:flex;flex-direction:column;align-items:center}
+  .tag{font-size:.7em;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:14px}
+  .toc{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 18px;margin:20px 0}
+  .toc a{color:var(--accent);text-decoration:none}
+  .toc li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Base de Datos — Parte 2</h1>
+  <p>Predicción y detección de anomalías de demanda espaciotemporal de viajes (NYC TLC HVFHV 2026)<br>
+  Proceso completo de implementación y comparación con lo solicitado en el Word.</p>
+</header>
+
+<div class="toc">
+  <strong style="color:#fff">Contenido</strong>
+  <ol>
+    <li><a href="#resumen">Resumen del caso y del proceso</a></li>
+    <li><a href="#comparacion">Comparación punto por punto con el Word</a></li>
+    <li><a href="#caracterizacion">Caracterización del problema</a></li>
+    <li><a href="#tecnologia">Selección de tecnología</a></li>
+    <li><a href="#modelo">Modelo de datos especializado</a></li>
+    <li><a href="#arquitectura">Arquitectura propuesta</a></li>
+    <li><a href="#resultados">Resultados reales de la implementación</a></li>
+    <li><a href="#replicacion">Pasos para replicar</a></li>
+  </ol>
+</div>
+
+<h2 id="resumen">1. Resumen del caso y del proceso</h2>
+<p>
+La Parte 1 implementó en <strong>PostgreSQL</strong> un modelo relacional de los viajes de
+<strong>Uber y Lyft</strong> en Nueva York (enero–mayo 2026): 11 tablas, particionado mensual,
+control de calidad y <em>feature engineering</em> orientado a predecir demanda horaria.
+</p>
+<p>
+En la Parte 2 se amplía ese caso hacia una arquitectura especializada <strong>complementaria</strong>
+(no sustituta): <strong>TimescaleDB</strong> (series temporales) + <strong>PostGIS</strong> (espacial).
+El objetivo es responder en tiempo casi real: <em>¿cuántos viajes se solicitarán en la próxima hora
+por zona y plataforma, y qué zonas presentan demanda anómala?</em>
+</p>
+<p>
+El proceso consistió en: (1) cargar los datos de la Parte 1 en un contenedor Docker,
+(2) añadir la capa espacial, (3) crear un hypertable de demanda, (4) crear un
+<em>continuous aggregate</em>, (5) activar compresión, y (6) ejecutar consultas de demostración
+temporales y espaciales. Todo es reproducible con scripts.
+</p>
+
+<h2 id="comparacion">2. Comparación punto por punto con el Word</h2>
+<p class="muted">Mapeo de cada punto del documento de la Parte 2 contra lo implementado.</p>
+
+<table>
+  <thead>
+    <tr><th>#</th><th>Punto solicitado (Word)</th><th>Qué exige</th><th>Cómo se cumple en este trabajo</th><th>Estado</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td><td><strong>Arquitectura de datos para CDS/IA</strong></td>
+      <td>Identificar un escenario (volumen, velocidad, variedad, latencia, escalabilidad, patrón de acceso) que justifique tecnología especializada complementaria al modelo relacional.</td>
+      <td>Escenario de <em>serie temporal + espacial</em>: demanda horaria por zona y plataforma, con lecturas analíticas por rango temporal que el relacional no optimiza.</td>
+      <td><span class="badge ok">Cumple</span></td>
+    </tr>
+    <tr>
+      <td>2</td><td><strong>Definición del caso de IA/CdD</strong></td>
+      <td>Caso ligado al negocio de la Parte 1.</td>
+      <td>Predicción de demanda espaciotemporal + detección de anomalías (hereda la unidad predictiva de la Parte 1).</td>
+      <td><span class="badge ok">Cumple</span></td>
+    </tr>
+    <tr>
+      <td>3</td><td><strong>Caracterización del problema</strong></td>
+      <td>Volumen, frecuencia, tipos de datos, real-time, latencia, patrón lect/escritura, escalabilidad, tipo de consultas.</td>
+      <td>Tabla de caracterización con cifras reales medidas sobre la base (ver sección 3).</td>
+      <td><span class="badge ok">Cumple</span></td>
+    </tr>
+    <tr>
+      <td>4</td><td><strong>Selección de tecnología</strong></td>
+      <td>Justificar una tecnología complementaria (qué resuelve, por qué, ventajas, limitaciones, cómo se complementa).</td>
+      <td>TimescaleDB + PostGIS, con justificación derivada de la caracterización (ver sección 4).</td>
+      <td><span class="badge ok">Cumple</span></td>
+    </tr>
+    <tr>
+      <td>5</td><td><strong>Modelo de datos NoSQL / especializado</strong></td>
+      <td>Diseñar la estructura de datos de la tecnología elegida.</td>
+      <td>Hypertable <code>demanda_serie</code>, columna <code>geo</code>, continuous aggregate y compresión (ver sección 5).</td>
+      <td><span class="badge ok">Cumple</span></td>
+    </tr>
+    <tr>
+      <td>6</td><td><strong>Arquitectura propuesta</strong></td>
+      <td>Diagrama de arquitectura <strong>obligatorio</strong> (apps, APIs, BD relacional, eventos, data lake, ML pipeline, etc.).</td>
+      <td>Diagrama con PostgreSQL (transaccional) + TimescaleDB/PostGIS (analítica) + Feature Store + ML Pipeline + Registry + API de inferencia (ver sección 6).</td>
+      <td><span class="badge ok">Cumple</span></td>
+    </tr>
+    <tr>
+      <td>7</td><td><strong>Comparación entre tecnologías</strong></td>
+      <td>Tabla PostgreSQL vs. tecnología elegida y responder "¿por qué ambas?" (Polyglot Persistence).</td>
+      <td>Tabla comparativa + argumento de Polyglot Persistence (ver sección 4).</td>
+      <td><span class="badge ok">Cumple</span></td>
+    </tr>
+    <tr>
+      <td>8</td><td><strong>Entregables</strong></td>
+      <td><code>arquitectura.pdf</code>, <code>modelo_nosql.pdf</code>, <code>informe_final.pdf</code>.</td>
+      <td>Los tres PDFs generados con LaTeX, más los scripts SQL y este HTML.</td>
+      <td><span class="badge ok">Cumple</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="caracterizacion">3. Caracterización del problema</h2>
+<table>
+  <thead><tr><th>Dimensión</th><th>Valor / estimación (medido)</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Volumen</strong></td><td>105 996 114 filas en el universo (ene–may 2026); muestra cargada <strong>4 999 931</strong> filas; proyección ≈ 250 M filas/año.</td></tr>
+    <tr><td><strong>Frecuencia</strong></td><td>Ingesta mensual por lotes; análisis horario (<code>demanda_hora</code>).</td></tr>
+    <tr><td><strong>Tipos de datos</strong></td><td>Temporales (timestamp), numéricos (importes, millas, duración), booleanos y geoespaciales (long/lat WGS84).</td></tr>
+    <tr><td><strong>Tiempo real</strong></td><td>Casi real: inferencia cada hora sobre la serie actualizada.</td></tr>
+    <tr><td><strong>Latencia esperada</strong></td><td>Inferencia &lt; 100 ms; consulta de demanda &lt; 500 ms.</td></tr>
+    <tr><td><strong>Patrón lect/escritura</strong></td><td>Escritura en lote (ingesta) + lectura analítica intensiva por rango temporal y por zona.</td></tr>
+    <tr><td><strong>Escalabilidad</strong></td><td>Particionado por tiempo + compresión para ≈ 250 M filas/año.</td></tr>
+    <tr><td><strong>Consultas predominantes</strong></td><td>Agregados temporales (<code>time_bucket</code>), rezagos, medias móviles, filtros por zona/proximidad.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="tecnologia">4. Selección de tecnología y comparación</h2>
+<div class="card">
+  <p><strong>Tecnología principal:</strong> TimescaleDB (extensión de PostgreSQL para series temporales).</p>
+  <p><strong>Complemento espacial:</strong> PostGIS (aprovecha las coordenadas cargadas).</p>
+  <p><strong>Qué problema resuelve:</strong> consultas de rango temporal y agregaciones sobre millones de observaciones con baja latencia, costosas con escaneo secuencial relacional.</p>
+  <p><strong>Por qué se eligió:</strong> el dato es una serie temporal; aporta hypertables, compresión nativa y <em>continuous aggregates</em>, integrándose con el modelo relacional sin migración.</p>
+  <p><strong>Ventaja demostrada:</strong> compresión de 162 MB → 14 MB (≈ 11,6×).</p>
+  <p><strong>Limitaciones:</strong> la compresión de segmentos deshabilita ciertas escrituras directas sobre chunks comprimidos; menor paralelismo de escritura que soluciones distribuidas.</p>
+</div>
+
+<h3>Comparación PostgreSQL vs. TimescaleDB (+PostGIS)</h3>
+<table>
+  <thead><tr><th>Criterio</th><th>PostgreSQL</th><th>TimescaleDB (+PostGIS)</th></tr></thead>
+  <tbody>
+    <tr><td>Modelo</td><td>Relacional</td><td>Serie temporal + espacial</td></tr>
+    <tr><td>Particionado</td><td>Manual (por mes)</td><td>Automático (hypertable)</td></tr>
+    <tr><td>Compresión</td><td>No nativa</td><td>Nativa por segmentos (≈ 11,6× observado)</td></tr>
+    <tr><td>Agregados históricos</td><td>Vistas/consultas costosas</td><td>Continuous aggregates</td></tr>
+    <tr><td>Consultas por rango temporal</td><td>Costosas sobre millones de filas</td><td>Optimizadas por tiempo</td></tr>
+    <tr><td>Espacial</td><td>No</td><td>PostGIS + índice GiST</td></tr>
+    <tr><td>Transacciones ACID</td><td>Excelente</td><td>Excelente (es PostgreSQL)</td></tr>
+    <tr><td>Caso principal</td><td>Core transaccional, integridad, catálogos</td><td>Analítica temporal–espacial en tiempo casi real</td></tr>
+  </tbody>
+</table>
+
+<div class="req">
+  <span class="t">¿Por qué ambas y no reemplazar una por otra?</span>
+  <p>Por <strong>Polyglot Persistence</strong>: distintas tecnologías coexisten según las características
+  de cada problema. PostgreSQL es la <em>fuente de verdad</em> transaccional (viajes, catálogos, lotes,
+  reglas de calidad, integridad referencial). TimescaleDB y PostGIS optimizan el patrón de acceso
+  analítico temporal–espacial que el relacional no resuelve eficientemente. Los datos fluyen de
+  PostgreSQL hacia la capa especializada sin duplicar la lógica de negocio.</p>
+</div>
+
+<h2 id="modelo">5. Modelo de datos especializado</h2>
+<div class="grid2">
+  <div class="card">
+    <h3>Capa espacial (PostGIS)</h3>
+<pre><code>ALTER TABLE core.zona_taxi
+  ADD COLUMN geo GEOGRAPHY(POINT,4326);
+
+UPDATE core.zona_taxi
+SET geo = ST_SetSRID(ST_MakePoint(longitud, latitud), 4326)::geography
+WHERE longitud IS NOT NULL AND latitud IS NOT NULL;
+
+CREATE INDEX idx_zona_taxi_geo
+  ON core.zona_taxi USING GIST (geo);</code></pre>
+  </div>
+  <div class="card">
+    <h3>Hypertable (TimescaleDB)</h3>
+<pre><code>CREATE TABLE analytics.demanda_serie (
+  hora            TIMESTAMPTZ NOT NULL,
+  zona_origen_id  SMALLINT    NOT NULL,
+  plataforma_codigo VARCHAR(10) NOT NULL,
+  viajes          BIGINT      NOT NULL
+);
+
+SELECT create_hypertable(
+  'analytics.demanda_serie', 'hora',
+  if_not_exists =&gt; TRUE);</code></pre>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Continuous aggregate</h3>
+<pre><code>CREATE MATERIALIZED VIEW analytics.demanda_diaria
+WITH (timescaledb.continuous) AS
+SELECT time_bucket('1 day', hora) AS dia,
+       zona_origen_id, plataforma_codigo,
+       SUM(viajes) AS viajes, COUNT(*) AS n_horas
+FROM analytics.demanda_serie
+GROUP BY dia, zona_origen_id, plataforma_codigo
+WITH NO DATA;</code></pre>
+  </div>
+  <div class="card">
+    <h3>Compresión</h3>
+<pre><code>ALTER TABLE analytics.demanda_serie SET (
+  timescaledb.compress,
+  timescaledb.compress_segmentby = 'zona_origen_id, plataforma_codigo',
+  timescaledb.compress_orderby   = 'hora');
+
+SELECT add_compression_policy(
+  'analytics.demanda_serie', INTERVAL '7 days');</code></pre>
+  </div>
+</div>
+
+<h2 id="arquitectura">6. Arquitectura propuesta</h2>
+<div class="arch">
+  <div class="node n-app">APP Web / Mobile</div>
+  <div class="arrow">▼</div>
+  <div class="node n-app">API</div>
+  <div class="arrow">▼</div>
+  <div class="branches">
+    <div class="col">
+      <div class="node n-rel">PostgreSQL<small>core transaccional (viajes, catálogos, integridad)</small></div>
+      <div class="arrow">▼</div>
+      <div class="node n-rel">Datos de negocio</div>
+    </div>
+    <div class="col">
+      <div class="node n-ts">TimescaleDB + PostGIS<small>series temporales + espacial</small></div>
+      <div class="arrow">▼</div>
+      <div class="node n-ts">Feature Store</div>
+      <div class="arrow">▼</div>
+      <div class="node n-ml">ML Pipeline<small>entrenamiento</small></div>
+      <div class="arrow">▼</div>
+      <div class="node n-ml">Model Registry<small>MLflow</small></div>
+      <div class="arrow">▼</div>
+      <div class="node n-ml">API de inferencia<small>FastAPI</small></div>
+      <div class="arrow">▼</div>
+      <div class="node n-ml">Dashboard + alertas de anomalías</div>
+    </div>
+  </div>
+</div>
+<p class="muted">El diagrama se incluye también en <code>arquitectura.pdf</code> (generado con TikZ).</p>
+
+<h2 id="resultados">7. Resultados reales de la implementación</h2>
+<p class="muted">Ejecutado sobre PostgreSQL 16 + TimescaleDB 2.31 + PostGIS 3.6 en contenedor Docker.</p>
+
+<h3>Caracterización (medido)</h3>
+<ul>
+  <li>Viajes cargados: <strong>4 999 931</strong> — Uber <strong>3 590 362</strong> (71,81%), Lyft <strong>1 409 569</strong> (28,19%).</li>
+  <li><code>demanda_hora</code> (relacional): <strong>1 272 029</strong> filas, <strong>162 MB</strong>.</li>
+  <li>Hypertable <code>demanda_serie</code>: <strong>1 272 029</strong> filas, <strong>22 chunks</strong> (todos comprimidos), <strong>14 MB</strong> → factor ≈ <strong>11,6×</strong>.</li>
+</ul>
+
+<h3>Consultas temporales</h3>
+<ul>
+  <li>Hora pico global: <code>2026-02-07 19:00</code> → <strong>3 163</strong> viajes.</li>
+  <li>Día de mayor demanda: <code>2026-02-07</code> → <strong>47 981</strong> viajes.</li>
+</ul>
+
+<h3>Consultas espaciales</h3>
+<ul>
+  <li>Top demanda en 2 km de Midtown Center: Times Sq <strong>55 043</strong>, Midtown Center <strong>55 014</strong>, Midtown South <strong>45 399</strong>.</li>
+  <li>kNN desde JFK: Springfield Gardens South <strong>2 514 m</strong>, Springfield Gardens North <strong>3 012 m</strong>, Baisley Park <strong>3 570 m</strong>.</li>
+  <li>Distancia centroides Midtown–JFK: <strong>20 324 m</strong> (12,63 millas) frente a <strong>17,56 millas</strong> de media en los 1 040 viajes reales con esa ruta.</li>
+</ul>
+
+<h2 id="replicacion">8. Pasos para replicar</h2>
+<ol>
+  <li>Levantar el stack: <code>docker compose up -d --build</code> (carpeta <code>deploy/</code>).</li>
+  <li>Ejecutar en orden: <code>01_schema.sql</code>, <code>02_tables.sql</code>, <code>03_data.sql</code>, <code>06_zonas_geo.sql</code>.</li>
+  <li>Cargar los CSV de <code>viaje</code> e <code>incidencia</code> con <code>\copy ... WITH (FORMAT csv, HEADER true, NULL '')</code>.</li>
+  <li>Reconstruir <code>analytics.demanda_hora</code>.</li>
+  <li>Ejecutar <code>07_timescale.sql</code> (espacial + hypertable + continuous aggregate + compresión).</li>
+  <li>Ejecutar <code>08_demo_queries.sql</code> para reproducir los resultados.</li>
+  <li>Compilar los PDFs (opcional): <code>pdflatex informe_final.tex</code>, <code>modelo_nosql.tex</code>, <code>arquitectura.tex</code>.</li>
+</ol>
+
+<p class="muted" style="margin-top:40px">Proyecto final de Base de Datos (MCD8008) — Parte 2. Autores: García, Barreto, Chulluncuy, Hilario.</p>
+
+</div>
+</body>
+</html>

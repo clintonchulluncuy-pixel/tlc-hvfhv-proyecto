@@ -1,0 +1,27 @@
+# Secretos
+.env
+deploy/.env
+
+# Datos pesados (superan el límite de 100 MB de GitHub; los catálogos ya están en 03_data.sql)
+Parte 1/Datos/*.csv
+**/viaje_*.csv
+**/incidencia_*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Auxiliares de LaTeX
+*.aux
+*.log
+*.toc
+*.out
+*.synctex.gz
+
+# Datos de Docker
+pgdata/
+mlflow-data/
+
+# Temporales de Word/Office
+~$*

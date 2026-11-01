@@ -1,0 +1,97 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage[a4paper,margin=1.8cm]{geometry}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,fit,backgrounds}
+
+\definecolor{rel}{RGB}{33,102,172}
+\definecolor{ts}{RGB}{33,150,120}
+\definecolor{ml}{RGB}{190,100,40}
+\definecolor{app}{RGB}{80,80,80}
+
+\tikzset{
+  box/.style={draw, rounded corners=2pt, align=center, minimum height=0.8cm,
+              minimum width=3.1cm, font=\small, inner sep=4pt},
+  lbl/.style={font=\scriptsize\itshape, text=gray}
+}
+
+\title{\textbf{Arquitectura propuesta}\\[0.3em]
+\Large Predicción de demanda espaciotemporal (TimescaleDB + PostGIS)}
+\author{García, Barreto, Chulluncuy, Hilario}
+\date{Base de Datos (MCD8008) -- Parte 2}
+
+\begin{document}
+\maketitle
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=0.55cm and 1.1cm,
+  arr/.style={-{Stealth[length=2.2mm]}, thick}
+]
+
+% Aplicaciones y API
+\node[box, fill=app!10] (app) {APP Web / Mobile};
+\node[box, fill=app!10, below=of app] (api) {API};
+
+% Rama relacional
+\node[box, fill=rel!15, below left=of api, xshift=-1.6cm] (pg) {PostgreSQL\\ \scriptsize (core transaccional)};
+\node[box, fill=rel!15, below=of pg] (datos) {Datos de negocio};
+
+% Rama analitica
+\node[box, fill=ts!15, below right=of api, xshift=1.6cm] (ts) {TimescaleDB + PostGIS\\ \scriptsize (series + espacial)};
+\node[box, fill=ts!15, below=of ts] (fs) {Feature Store};
+\node[box, fill=ml!15, below=of fs] (ml) {ML Pipeline\\ \scriptsize (entrenamiento)};
+\node[box, fill=ml!15, below=of ml] (reg) {Model Registry\\ \scriptsize (MLflow)};
+\node[box, fill=ml!15, below=of reg] (inf) {API de inferencia\\ \scriptsize (FastAPI)};
+\node[box, fill=ml!15, below=of inf] (out) {Dashboard +\\ alertas de anomalías};
+
+\draw[arr] (app) -- (api);
+\draw[arr] (api.south) |- (pg);
+\draw[arr] (api.south) |- (ts);
+\draw[arr] (pg) -- (datos);
+\draw[arr] (ts) -- (fs);
+\draw[arr] (fs) -- (ml);
+\draw[arr] (ml) -- (reg);
+\draw[arr] (reg) -- (inf);
+\draw[arr] (inf) -- (out);
+
+\end{tikzpicture}
+\end{center}
+
+\section{Descripción de componentes}
+
+\begin{itemize}
+  \item \textbf{APP Web / Mobile y API:} aplicaciones consumidoras del pronóstico y de las
+        alertas.
+  \item \textbf{PostgreSQL (core transaccional):} mantiene viajes, catálogos, lotes de ingesta,
+        reglas de calidad e integridad referencial. Es la fuente de verdad.
+  \item \textbf{TimescaleDB + PostGIS:} capa analítica con el hypertable
+        \texttt{demanda\_serie}, el continuous aggregate diario y la columna espacial
+        \texttt{geo} con índice GiST.
+  \item \textbf{Feature Store:} materializa las variables (rezagos, medias móviles, variables
+        espaciales) para entrenamiento y para inferencia en línea.
+  \item \textbf{ML Pipeline:} entrena el modelo (baseline LightGBM) con validación temporal
+        \emph{walk-forward}.
+  \item \textbf{Model Registry (MLflow):} versiona y sirve los modelos entrenados.
+  \item \textbf{API de inferencia (FastAPI):} expone el pronóstico horario por zona y
+        plataforma con latencia objetivo $<100$\,ms.
+  \item \textbf{Dashboard + alertas:} visualización de demanda y detección de anomalías.
+\end{itemize}
+
+\section{Flujo de datos}
+
+\begin{enumerate}
+  \item La ingesta mensual carga los viajes en PostgreSQL (núcleo transaccional).
+  \item El agregado \texttt{demanda\_hora} se proyecta al hypertable
+        \texttt{demanda\_serie} (TimescaleDB) y se enriquece con la geometría de
+        \texttt{zona\_taxi} (PostGIS).
+  \item El feature store consolida variables temporales y espaciales.
+  \item El pipeline entrena el modelo y lo registra en MLflow.
+  \item La API de inferencia sirve pronósticos y el dashboard consume el resultado,
+        disparando alertas ante anomalías.
+\end{enumerate}
+
+\end{document}

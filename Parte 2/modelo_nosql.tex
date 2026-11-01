@@ -1,0 +1,138 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage[a4paper,margin=2.4cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,columns=fullflexible,showstringspaces=false}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+
+\title{\textbf{Modelo de datos NoSQL / especializado}\\[0.3em]
+\Large TimescaleDB + PostGIS para predicción de demanda}
+\author{García, Barreto, Chulluncuy, Hilario}
+\date{Base de Datos (MCD8008) -- Parte 2}
+
+\begin{document}
+\maketitle
+
+\section{Principios de diseño}
+
+El modelo especializado \textbf{no reemplaza} al modelo relacional. Se trata de una capa
+analítica que reutiliza las dimensiones (\texttt{core.zona\_taxi}, \texttt{core.plataforma})
+y proyecta la serie de demanda en una estructura optimizada para consultas temporales y
+espaciales.
+
+\begin{itemize}
+  \item \textbf{Polyglot Persistence:} PostgreSQL conserva el núcleo transaccional; la capa
+        TimescaleDB/PostGIS se deriva de él y se reconstruye desde el agregado
+        \texttt{analytics.demanda\_hora}.
+  \item \textbf{Desnormalización deliberada y reconstruible:} el hypertable duplica la demanda
+        horaria para acelerar el acceso, igual que ya hacía \texttt{demanda\_hora} en la Parte 1.
+  \item \textbf{Separación temporal--espacial:} las coordenadas viven en la entidad maestra
+        \texttt{zona\_taxi} (normalizada) y se unen en tiempo de consulta; así el hypertable
+        permanece compresible (las columnas geográficas no son compresibles de forma nativa).
+\end{itemize}
+
+\section{Capa espacial (PostGIS)}
+
+\subsection{Atributo geo en la entidad zona\_taxi}
+\begin{lstlisting}
+ALTER TABLE core.zona_taxi
+    ADD COLUMN IF NOT EXISTS geo GEOGRAPHY(POINT, 4326);
+
+UPDATE core.zona_taxi
+SET geo = ST_SetSRID(ST_MakePoint(longitud, latitud), 4326)::geography
+WHERE longitud IS NOT NULL AND latitud IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_zona_taxi_geo
+    ON core.zona_taxi USING GIST (geo);
+\end{lstlisting}
+
+Se usa el tipo \texttt{GEOGRAPHY(POINT,4326)} (WGS84) para que las funciones de distancia
+(\texttt{ST\_Distance}, \texttt{ST\_DWithin}) devuelvan valores en metros sobre el elipsoide,
+adecuados para el dominio de NYC.
+
+\section{Hypertable de demanda (TimescaleDB)}
+
+\subsection{Estructura}
+\begin{lstlisting}
+CREATE TABLE analytics.demanda_serie (
+    hora            TIMESTAMPTZ NOT NULL,
+    zona_origen_id  SMALLINT    NOT NULL,
+    plataforma_codigo VARCHAR(10) NOT NULL,
+    viajes          BIGINT      NOT NULL
+);
+
+SELECT create_hypertable('analytics.demanda_serie', 'hora',
+                         if_not_exists => TRUE);
+\end{lstlisting}
+
+La columna \texttt{hora} es la dimensión de particionamiento: TimescaleDB la divide en
+\emph{chunks} de tamaño automático, de modo que una consulta por rango temporal solo accede
+a los chunks relevantes.
+
+\subsection{Población}
+\begin{lstlisting}
+INSERT INTO analytics.demanda_serie
+    (hora, zona_origen_id, plataforma_codigo, viajes)
+SELECT hora::timestamptz, zona_origen_id, plataforma_codigo, viajes
+FROM analytics.demanda_hora;
+\end{lstlisting}
+
+\section{Continuous aggregate}
+
+\begin{lstlisting}
+CREATE MATERIALIZED VIEW analytics.demanda_diaria
+WITH (timescaledb.continuous) AS
+SELECT time_bucket('1 day', hora) AS dia,
+       zona_origen_id,
+       plataforma_codigo,
+       SUM(viajes) AS viajes,
+       COUNT(*)     AS n_horas
+FROM analytics.demanda_serie
+GROUP BY dia, zona_origen_id, plataforma_codigo
+WITH NO DATA;
+
+CALL refresh_continuous_aggregate('analytics.demanda_diaria', NULL, NULL);
+\end{lstlisting}
+
+El agregado diario se mantiene de forma incremental y automática, evitando recalcular
+agregaciones completas en cada consulta.
+
+\section{Política de compresión}
+
+\begin{lstlisting}
+ALTER TABLE analytics.demanda_serie SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'zona_origen_id, plataforma_codigo',
+    timescaledb.compress_orderby   = 'hora'
+);
+
+SELECT add_compression_policy('analytics.demanda_serie', INTERVAL '7 days');
+\end{lstlisting}
+
+Los segmentos se comprimen por \texttt{zona\_origen\_id} y \texttt{plataforma\_codigo}, y se
+ordenan por \texttt{hora}. Resultado observado: $162$\,MB (relacional) $\to$ $14$\,MB
+(comprimido), factor $\approx 11{,}6\times$.
+
+\section{Esquema resultante}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Objeto} & \textbf{Tecnología / tipo} \\
+\midrule
+\texttt{core.zona\_taxi.geo} & PostGIS \texttt{GEOGRAPHY(POINT,4326)} + índice GiST \\
+\texttt{analytics.demanda\_serie} & Hypertable (dimensión \texttt{hora}) \\
+\texttt{analytics.demanda\_diaria} & Continuous aggregate diario \\
+Compresión & Segmento por (zona, plataforma), orden por hora \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

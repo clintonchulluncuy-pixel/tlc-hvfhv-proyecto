@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+mlflow-data/
+pgdata/
+.venv/
